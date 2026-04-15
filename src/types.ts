@@ -2,11 +2,15 @@ export type ActionType = 'speak' | 'question'
 
 export type ActionStatus = 'pending' | 'approved' | 'skipped'
 
+export type RoundStatus = 'setup' | 'live'
+
 export interface Round {
   id: string
   name: string
   createdAt: number
   updatedAt: number
+  status: RoundStatus
+  placardWindowEndsAt: number | null
   activeActionId: string | null
   activeParticipantId: string | null
   activeType: ActionType | null

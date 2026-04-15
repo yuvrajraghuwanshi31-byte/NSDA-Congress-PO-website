@@ -56,6 +56,8 @@ export async function createRound(name: string, participantNames: string[]) {
     name: name.trim(),
     createdAt: timestamp,
     updatedAt: timestamp,
+    status: 'setup',
+    placardWindowEndsAt: null,
     activeActionId: null,
     activeParticipantId: null,
     activeType: null,
@@ -120,11 +122,130 @@ export async function addParticipant(roundId: string, name: string) {
   await batch.commit()
 }
 
+export async function joinParticipant(roundId: string, name: string) {
+  const trimmedName = name.trim()
+
+  if (!trimmedName) {
+    throw new Error('Enter your name before joining the round.')
+  }
+
+  const roundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!roundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const participantSnapshots = await getDocs(query(participantsRef(roundId)))
+  const existingParticipant = participantSnapshots.docs
+    .map((snapshot) => snapshot.data() as Participant)
+    .find((participant) => participant.name.toLowerCase() === trimmedName.toLowerCase())
+
+  if (existingParticipant) {
+    return existingParticipant.id
+  }
+
+  const timestamp = now()
+  const participantDoc = doc(participantsRef(roundId))
+  const participant: Participant = {
+    id: participantDoc.id,
+    name: trimmedName,
+    speakCount: 0,
+    lastActionTime: null,
+  }
+  const batch = writeBatch(assertDb())
+
+  batch.set(participantDoc, participant)
+  batch.set(roundRef(roundId), { updatedAt: timestamp }, { merge: true })
+  await batch.commit()
+
+  return participant.id
+}
+
+export async function updateParticipant(roundId: string, participant: Participant) {
+  const trimmedName = participant.name.trim()
+
+  if (!trimmedName) {
+    throw new Error('Participant name cannot be empty.')
+  }
+
+  const existingSnapshot = await getDoc(doc(participantsRef(roundId), participant.id))
+
+  if (!existingSnapshot.exists()) {
+    throw new Error('Participant not found.')
+  }
+
+  const batch = writeBatch(assertDb())
+  const timestamp = now()
+
+  batch.set(
+    doc(participantsRef(roundId), participant.id),
+    {
+      ...participant,
+      name: trimmedName,
+      speakCount: Math.max(0, participant.speakCount),
+    },
+    { merge: true },
+  )
+  batch.set(roundRef(roundId), { updatedAt: timestamp }, { merge: true })
+  await batch.commit()
+}
+
+export async function startRound(roundId: string) {
+  const roundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!roundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const timestamp = now()
+  await setRoundFields(roundId, {
+    status: 'live',
+    placardWindowEndsAt: null,
+    updatedAt: timestamp,
+  })
+}
+
+export async function openPlacardWindow(roundId: string, durationMs = 5000) {
+  const roundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!roundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const round = roundSnapshot.data() as Round
+
+  if (round.status !== 'live') {
+    throw new Error('Start the round before opening placards.')
+  }
+
+  const timestamp = now()
+  await setRoundFields(roundId, {
+    placardWindowEndsAt: timestamp + durationMs,
+    updatedAt: timestamp,
+  })
+}
+
+async function setRoundFields(roundId: string, fields: Partial<Round>) {
+  const batch = writeBatch(assertDb())
+  batch.set(roundRef(roundId), fields, { merge: true })
+  await batch.commit()
+}
+
 export async function requestAction(roundId: string, participantId: string, type: ActionType) {
   const roundSnapshot = await getDoc(roundRef(roundId))
 
   if (!roundSnapshot.exists()) {
     throw new Error('Round not found.')
+  }
+
+  const round = roundSnapshot.data() as Round
+
+  if (round.status !== 'live') {
+    throw new Error('The round has not started yet.')
+  }
+
+  if (type === 'speak' && (!round.placardWindowEndsAt || round.placardWindowEndsAt <= now())) {
+    throw new Error('Placards are not open right now.')
   }
 
   const participantSnapshot = await getDoc(doc(participantsRef(roundId), participantId))
@@ -202,6 +323,7 @@ export async function approveNextAction(roundId: string, type: ActionType) {
   const nextRound: Round = {
     ...round,
     updatedAt: timestamp,
+    placardWindowEndsAt: type === 'speak' ? null : round.placardWindowEndsAt,
     activeActionId: nextAction.id,
     activeParticipantId: participant.id,
     activeType: type,
