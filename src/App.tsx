@@ -6,10 +6,12 @@ import {
   addParticipant,
   approveNextAction,
   createRound,
+  endSpeechTimer,
   joinParticipant,
   openPlacardWindow,
   requestAction,
   skipAction,
+  startSpeechTimer,
   startRound,
   undoLatestChange,
   updateParticipant,
@@ -22,8 +24,6 @@ type LandingStep = 'home' | 'po' | 'participant-room' | 'participant-name'
 type EditableParticipant = {
   name: string
   initialPrecedence: string
-  speakCount: string
-  lastActionTime: string
 }
 
 const ROUND_STORAGE_KEY = 'po-live-round-id'
@@ -58,32 +58,10 @@ function formatTime(timestamp: number | null) {
   })
 }
 
-function formatDateTimeInput(timestamp: number | null) {
-  if (!timestamp) {
-    return ''
-  }
-
-  const date = new Date(timestamp)
-  const offset = date.getTimezoneOffset()
-  const local = new Date(date.getTime() - offset * 60000)
-  return local.toISOString().slice(0, 16)
-}
-
-function parseDateTimeInput(value: string) {
-  if (!value) {
-    return null
-  }
-
-  const parsed = new Date(value).getTime()
-  return Number.isNaN(parsed) ? null : parsed
-}
-
 function createEditableParticipant(participant: Participant): EditableParticipant {
   return {
     name: participant.name,
     initialPrecedence: String(participant.initialPrecedence),
-    speakCount: String(participant.speakCount),
-    lastActionTime: formatDateTimeInput(participant.lastActionTime),
   }
 }
 
@@ -156,6 +134,7 @@ function App() {
     (snapshot.round?.placardWindowEndsAt ?? 0) - currentTime,
   )
   const placardsOpen = placardWindowRemainingMs > 0
+  const speechPhase = snapshot.round?.speechPhase ?? 'idle'
   const sortedJoinPreviewParticipants = useMemo(
     () => sortParticipants(joinPreviewSnapshot.participants),
     [joinPreviewSnapshot.participants],
@@ -327,7 +306,6 @@ function App() {
       return
     }
 
-    const speakCount = Number.parseInt(draft.speakCount, 10)
     const initialPrecedence = Number.parseInt(draft.initialPrecedence, 10)
 
     await runMutation(`save-participant-${participantId}`, async () => {
@@ -335,8 +313,6 @@ function App() {
         ...existing,
         name: draft.name,
         initialPrecedence: Number.isNaN(initialPrecedence) ? existing.initialPrecedence : initialPrecedence,
-        speakCount: Number.isNaN(speakCount) ? 0 : speakCount,
-        lastActionTime: parseDateTimeInput(draft.lastActionTime),
       })
     })
   }
@@ -357,7 +333,7 @@ function App() {
     }
 
     await runMutation('open-placards', async () => {
-      await openPlacardWindow(currentRoundId, 5000)
+      await openPlacardWindow(currentRoundId, 10000)
     })
   }
 
@@ -378,6 +354,26 @@ function App() {
 
     await runMutation('approve-speak', async () => {
       await approveNextAction(currentRoundId, 'speak')
+    })
+  }
+
+  async function handleStartSpeechTimer() {
+    if (!currentRoundId) {
+      return
+    }
+
+    await runMutation('start-speech', async () => {
+      await startSpeechTimer(currentRoundId)
+    })
+  }
+
+  async function handleEndSpeechTimer() {
+    if (!currentRoundId) {
+      return
+    }
+
+    await runMutation('end-speech', async () => {
+      await endSpeechTimer(currentRoundId)
     })
   }
 
@@ -625,8 +621,7 @@ function App() {
                             <tr>
                               <th>Initial</th>
                               <th>Name</th>
-                              <th>Speeches</th>
-                              <th>Recency</th>
+                              <th>Precedence</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -635,7 +630,6 @@ function App() {
                                 <td>{participant.initialPrecedence}</td>
                                 <td>{participant.name}</td>
                                 <td>{participant.speakCount}</td>
-                                <td>{formatTime(participant.lastActionTime)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -726,7 +720,7 @@ function App() {
                 <div className="panel-header">
                   <div>
                     <p className="eyebrow">PO controls</p>
-                    <h2>Set precedence and recency</h2>
+                    <h2>Set the precedence list</h2>
                   </div>
                 </div>
 
@@ -751,8 +745,6 @@ function App() {
                       <tr>
                         <th>Name</th>
                         <th>Initial Order</th>
-                        <th>Precedence</th>
-                        <th>Last Action</th>
                         <th>Save</th>
                       </tr>
                     </thead>
@@ -792,36 +784,6 @@ function App() {
                               />
                             </td>
                             <td>
-                              <input
-                                value={draft.speakCount}
-                                onChange={(event) =>
-                                  setEditableParticipants((current) => ({
-                                    ...current,
-                                    [participant.id]: {
-                                      ...draft,
-                                      speakCount: event.target.value,
-                                    },
-                                  }))
-                                }
-                                inputMode="numeric"
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="datetime-local"
-                                value={draft.lastActionTime}
-                                onChange={(event) =>
-                                  setEditableParticipants((current) => ({
-                                    ...current,
-                                    [participant.id]: {
-                                      ...draft,
-                                      lastActionTime: event.target.value,
-                                    },
-                                  }))
-                                }
-                              />
-                            </td>
-                            <td>
                               <button
                                 className="ghost-button compact-button"
                                 onClick={() => handleSaveParticipant(participant.id)}
@@ -848,54 +810,96 @@ function App() {
                   </div>
                 </div>
 
-                <div className="spotlight-card">
-                  <span className="card-label">Next speaker</span>
-                  <strong>
-                    {nextSpeaker
-                      ? participantIndex.get(nextSpeaker.participantId)?.name ?? 'Unknown participant'
-                      : 'No placards raised'}
-                  </strong>
-                  <span>
-                    {nextSpeaker
-                      ? `Queued at ${formatTime(nextSpeaker.timestamp)}`
-                      : 'Open placards to let students raise for the next speech.'}
-                  </span>
-                </div>
+                {speechPhase === 'idle' ? (
+                  <>
+                    <div className="spotlight-card">
+                      <span className="card-label">Next speaker</span>
+                      <strong>
+                        {nextSpeaker
+                          ? participantIndex.get(nextSpeaker.participantId)?.name ?? 'Unknown participant'
+                          : 'No placards raised'}
+                      </strong>
+                      <span>
+                        {nextSpeaker
+                          ? `Initial ${participantIndex.get(nextSpeaker.participantId)?.initialPrecedence ?? '-'} • Precedence ${participantIndex.get(nextSpeaker.participantId)?.speakCount ?? 0}`
+                          : 'Open placards to let students raise for the next speech.'}
+                      </span>
+                    </div>
 
-                <div className="command-row">
-                  <button
-                    className="primary-button"
-                    onClick={handleOpenPlacards}
-                    disabled={placardsOpen || Boolean(busyAction)}
-                  >
-                    {placardsOpen
-                      ? `Placards open ${Math.ceil(placardWindowRemainingMs / 1000)}s`
-                      : busyAction === 'open-placards'
-                        ? 'Opening...'
-                        : 'Open placards for 5s'}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    onClick={handleApproveNextSpeaker}
-                    disabled={!nextSpeaker || Boolean(busyAction)}
-                  >
-                    {busyAction === 'approve-speak' ? 'Approving...' : 'Approve next speaker'}
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={handleSkipNextSpeaker}
-                    disabled={!nextSpeaker || Boolean(busyAction)}
-                  >
-                    {busyAction === 'skip-speak' ? 'Skipping...' : 'Skip'}
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={handleUndo}
-                    disabled={!canUndo || Boolean(busyAction)}
-                  >
-                    {busyAction === 'undo' ? 'Undoing...' : 'Undo'}
-                  </button>
-                </div>
+                    <div className="command-row">
+                      <button
+                        className="primary-button"
+                        onClick={handleOpenPlacards}
+                        disabled={placardsOpen || Boolean(busyAction)}
+                      >
+                        {placardsOpen
+                          ? `Placards open ${Math.ceil(placardWindowRemainingMs / 1000)}s`
+                          : busyAction === 'open-placards'
+                            ? 'Opening...'
+                            : 'Open placards for 10s'}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={handleApproveNextSpeaker}
+                        disabled={!nextSpeaker || Boolean(busyAction)}
+                      >
+                        {busyAction === 'approve-speak' ? 'Approving...' : 'Approve next speaker'}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={handleSkipNextSpeaker}
+                        disabled={!nextSpeaker || Boolean(busyAction)}
+                      >
+                        {busyAction === 'skip-speak' ? 'Skipping...' : 'Skip'}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={handleUndo}
+                        disabled={!canUndo || Boolean(busyAction)}
+                      >
+                        {busyAction === 'undo' ? 'Undoing...' : 'Undo'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="timing-stage">
+                    <div className="spotlight-card">
+                      <span className="card-label">
+                        {speechPhase === 'awaiting_start' ? 'Speaker approved' : 'Speech in progress'}
+                      </span>
+                      <strong>
+                        {snapshot.round.activeParticipantId
+                          ? participantIndex.get(snapshot.round.activeParticipantId)?.name ?? 'Unknown participant'
+                          : 'No active speaker'}
+                      </strong>
+                      <span>
+                        {speechPhase === 'awaiting_start'
+                          ? 'Start the speech timer when the student begins speaking.'
+                          : `Started at ${formatTime(snapshot.round.activeSpeechStartedAt ?? null)}`}
+                      </span>
+                    </div>
+
+                    <div className="command-row">
+                      {speechPhase === 'awaiting_start' ? (
+                        <button
+                          className="primary-button"
+                          onClick={handleStartSpeechTimer}
+                          disabled={Boolean(busyAction)}
+                        >
+                          {busyAction === 'start-speech' ? 'Starting...' : 'Start speech'}
+                        </button>
+                      ) : (
+                        <button
+                          className="primary-button"
+                          onClick={handleEndSpeechTimer}
+                          disabled={Boolean(busyAction)}
+                        >
+                          {busyAction === 'end-speech' ? 'Ending...' : 'End speech'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="summary-grid single-column">
                   <article className="summary-card">
@@ -907,9 +911,7 @@ function App() {
                     </strong>
                     <span>
                       {snapshot.round.activeParticipantId
-                        ? `Last approved at ${formatTime(
-                            participantIndex.get(snapshot.round.activeParticipantId)?.lastActionTime ?? null,
-                          )}`
+                        ? `Initial ${participantIndex.get(snapshot.round.activeParticipantId)?.initialPrecedence ?? '-'} • Precedence ${participantIndex.get(snapshot.round.activeParticipantId)?.speakCount ?? 0}`
                         : 'Approve a raised placard to mark the active speaker.'}
                     </span>
                   </article>
@@ -950,9 +952,7 @@ function App() {
                         <div className="participant-head">
                           <div>
                             <h3>{participant.name}</h3>
-                            <p>
-                              P{participant.speakCount} • Last action {formatTime(participant.lastActionTime)}
-                            </p>
+                            <p>Initial {participant.initialPrecedence} • Precedence {participant.speakCount}</p>
                           </div>
                           <span className={`status-chip ${status}`}>{status}</span>
                         </div>
@@ -976,8 +976,7 @@ function App() {
                         <th>Rank</th>
                         <th>Initial</th>
                         <th>Name</th>
-                        <th>Speak Count</th>
-                        <th>Last Action</th>
+                        <th>Precedence</th>
                         <th>Status</th>
                       </tr>
                     </thead>
@@ -995,7 +994,6 @@ function App() {
                             <td>{participant.initialPrecedence}</td>
                             <td>{participant.name}</td>
                             <td>{participant.speakCount}</td>
-                            <td>{formatTime(participant.lastActionTime)}</td>
                             <td>
                               <span className={`status-chip ${status}`}>{status}</span>
                             </td>
@@ -1040,7 +1038,7 @@ function App() {
                     {hasPendingSpeak
                       ? 'Your placard is already in the queue.'
                       : snapshot.round.status === 'live'
-                        ? 'When the PO opens placards, this button activates for five seconds.'
+                        ? 'When the PO opens placards, this button activates for ten seconds.'
                         : 'The room is still in setup mode.'}
                   </span>
                 </div>
@@ -1100,7 +1098,6 @@ function App() {
                         <th>Initial</th>
                         <th>Name</th>
                         <th>Precedence</th>
-                        <th>Recency</th>
                         <th>Status</th>
                       </tr>
                     </thead>
@@ -1118,7 +1115,6 @@ function App() {
                             <td>{participant.initialPrecedence}</td>
                             <td>{participant.name}</td>
                             <td>{participant.speakCount}</td>
-                            <td>{formatTime(participant.lastActionTime)}</td>
                             <td>
                               <span className={`status-chip ${status}`}>{status}</span>
                             </td>

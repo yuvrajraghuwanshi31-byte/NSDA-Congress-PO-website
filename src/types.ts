@@ -3,6 +3,7 @@ export type ActionType = 'speak' | 'question'
 export type ActionStatus = 'pending' | 'approved' | 'skipped'
 
 export type RoundStatus = 'setup' | 'live'
+export type SpeechPhase = 'idle' | 'awaiting_start' | 'timing'
 
 export interface Round {
   id: string
@@ -11,6 +12,8 @@ export interface Round {
   updatedAt: number
   status: RoundStatus
   placardWindowEndsAt: number | null
+  speechPhase: SpeechPhase
+  activeSpeechStartedAt: number | null
   activeActionId: string | null
   activeParticipantId: string | null
   activeType: ActionType | null
@@ -44,6 +47,7 @@ export interface HistoryEntry {
     round: Round
     participant: Participant | null
     action: Action
+    relatedActions?: Action[]
   }
 }
 

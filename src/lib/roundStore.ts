@@ -67,6 +67,8 @@ export async function createRound(name: string, participantNames: string[]) {
     updatedAt: timestamp,
     status: 'setup',
     placardWindowEndsAt: null,
+    speechPhase: 'idle',
+    activeSpeechStartedAt: null,
     activeActionId: null,
     activeParticipantId: null,
     activeType: null,
@@ -196,11 +198,13 @@ export async function startRound(roundId: string) {
   await setRoundFields(roundId, {
     status: 'live',
     placardWindowEndsAt: null,
+    speechPhase: 'idle',
+    activeSpeechStartedAt: null,
     updatedAt: timestamp,
   })
 }
 
-export async function openPlacardWindow(roundId: string, durationMs = 5000) {
+export async function openPlacardWindow(roundId: string, durationMs = 10000) {
   const roundSnapshot = await getDoc(roundRef(roundId))
 
   if (!roundSnapshot.exists()) {
@@ -315,10 +319,16 @@ export async function approveNextAction(roundId: string, type: ActionType) {
     ...selectedAction,
     status: 'approved',
   }
+  const relatedActions =
+    type === 'speak'
+      ? pendingActions.filter((action) => action.id !== selectedAction.id)
+      : []
   const nextRound: Round = {
     ...round,
     updatedAt: timestamp,
     placardWindowEndsAt: type === 'speak' ? null : round.placardWindowEndsAt,
+    speechPhase: type === 'speak' ? 'awaiting_start' : round.speechPhase,
+    activeSpeechStartedAt: type === 'speak' ? null : round.activeSpeechStartedAt,
     activeActionId: nextAction.id,
     activeParticipantId: participant.id,
     activeType: type,
@@ -335,15 +345,64 @@ export async function approveNextAction(roundId: string, type: ActionType) {
       round,
       participant,
       action: selectedAction,
+      relatedActions,
     },
   }
   const batch = writeBatch(assertDb())
 
   batch.set(doc(actionsRef(roundId), selectedAction.id), nextAction)
+  for (const action of relatedActions) {
+    batch.set(doc(actionsRef(roundId), action.id), { ...action, status: 'skipped' })
+  }
   batch.set(doc(participantsRef(roundId), participant.id), nextParticipant)
   batch.set(roundRef(roundId), nextRound)
   batch.set(nextHistoryRef, historyEntry)
   await batch.commit()
+}
+
+export async function startSpeechTimer(roundId: string) {
+  const currentRoundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!currentRoundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const round = currentRoundSnapshot.data() as Round
+
+  if (!round.activeParticipantId || round.speechPhase !== 'awaiting_start') {
+    throw new Error('Approve a speaker before starting the timer.')
+  }
+
+  const timestamp = now()
+  await setRoundFields(roundId, {
+    speechPhase: 'timing',
+    activeSpeechStartedAt: timestamp,
+    updatedAt: timestamp,
+  })
+}
+
+export async function endSpeechTimer(roundId: string) {
+  const currentRoundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!currentRoundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const round = currentRoundSnapshot.data() as Round
+
+  if (round.speechPhase !== 'timing') {
+    throw new Error('The speech timer has not started yet.')
+  }
+
+  const timestamp = now()
+  await setRoundFields(roundId, {
+    speechPhase: 'idle',
+    activeSpeechStartedAt: null,
+    activeActionId: null,
+    activeParticipantId: null,
+    activeType: null,
+    updatedAt: timestamp,
+  })
 }
 
 export async function skipAction(roundId: string, actionId: string) {
@@ -419,6 +478,9 @@ export async function undoLatestChange(roundId: string) {
 
   batch.set(roundRef(roundId), historyEntry.before.round)
   batch.set(doc(actionsRef(roundId), historyEntry.before.action.id), historyEntry.before.action)
+  for (const action of historyEntry.before.relatedActions ?? []) {
+    batch.set(doc(actionsRef(roundId), action.id), action)
+  }
 
   if (historyEntry.before.participant) {
     batch.set(
