@@ -17,7 +17,7 @@ import {
 import type { Participant } from './types'
 
 type UserRole = 'po' | 'participant'
-type LandingStep = 'home' | 'po' | 'participant'
+type LandingStep = 'home' | 'po' | 'participant-room' | 'participant-name'
 
 type EditableParticipant = {
   name: string
@@ -113,6 +113,7 @@ function App() {
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [roundNameInput, setRoundNameInput] = useState('NSDA Round 1')
   const [joinRoundCode, setJoinRoundCode] = useState(getInitialRoundId() ?? '')
+  const [joinPreviewRoundId, setJoinPreviewRoundId] = useState<string | null>(null)
   const [selectedJoinParticipantId, setSelectedJoinParticipantId] = useState('')
   const [newParticipantName, setNewParticipantName] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
@@ -124,7 +125,6 @@ function App() {
   const [editableParticipants, setEditableParticipants] = useState<Record<string, EditableParticipant>>({})
 
   const snapshot = useRoundRealtime(currentRoundId)
-  const joinPreviewRoundId = !currentRoundId && landingStep === 'participant' ? joinRoundCode.trim().toUpperCase() || null : null
   const joinPreviewSnapshot = useRoundRealtime(joinPreviewRoundId)
 
   const participantIndex = useMemo(
@@ -245,6 +245,7 @@ function App() {
     setRole(null)
     setCurrentRoundId(null)
     setJoinRoundCode('')
+    setJoinPreviewRoundId(null)
     setSelectedJoinParticipantId('')
     setJoinedParticipantId(null)
     setUiError(null)
@@ -270,11 +271,26 @@ function App() {
     })
   }
 
-  async function handleJoinRound() {
+  function handleOpenJoinRoom() {
     const normalizedCode = joinRoundCode.trim().toUpperCase()
 
     if (!normalizedCode) {
-      setUiError('Enter a round code before joining.')
+      setUiError('Enter a round code before joining the room.')
+      return
+    }
+
+    setUiError(null)
+    setSelectedJoinParticipantId('')
+    setJoinPreviewRoundId(normalizedCode)
+    setJoinRoundCode(normalizedCode)
+    setLandingStep('participant-name')
+  }
+
+  async function handleJoinRound() {
+    const normalizedCode = joinPreviewRoundId ?? joinRoundCode.trim().toUpperCase()
+
+    if (!normalizedCode) {
+      setUiError('Join a room before choosing your name.')
       return
     }
 
@@ -283,7 +299,7 @@ function App() {
       window.localStorage.setItem(participantStorageKey(normalizedCode), participantId)
       setJoinedParticipantId(participantId)
       setRole('participant')
-      setLandingStep('participant')
+      setLandingStep('participant-name')
       selectRound(normalizedCode)
     })
   }
@@ -485,7 +501,7 @@ function App() {
                         className="secondary-button"
                         onClick={() => {
                           setUiError(null)
-                          setLandingStep('participant')
+                          setLandingStep('participant-room')
                         }}
                       >
                         Join round
@@ -528,7 +544,7 @@ function App() {
                     </div>
                   </article>
                 </section>
-              ) : (
+              ) : landingStep === 'participant-room' ? (
                 <section className="centered-flow">
                   <article className="control-card flow-card">
                     <p className="eyebrow">Participant</p>
@@ -539,22 +555,54 @@ function App() {
                         value={joinRoundCode}
                         onChange={(event) => {
                           setJoinRoundCode(event.target.value.toUpperCase())
+                          setJoinPreviewRoundId(null)
                           setSelectedJoinParticipantId('')
                         }}
                         placeholder="Paste the PO's round code"
                       />
                     </label>
+                    <div className="button-row flow-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={handleOpenJoinRoom}
+                        disabled={Boolean(busyAction)}
+                      >
+                        Join room
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={() => {
+                          setJoinPreviewRoundId(null)
+                          setLandingStep('home')
+                        }}
+                        disabled={Boolean(busyAction)}
+                      >
+                        Back
+                      </button>
+                    </div>
+                  </article>
+                </section>
+              ) : (
+                <section className="centered-flow">
+                  <article className="control-card flow-card">
+                    <p className="eyebrow">Participant</p>
+                    <h2>Choose your name</h2>
+                    <p className="muted">
+                      Room code <strong>{joinPreviewRoundId ?? joinRoundCode.trim().toUpperCase()}</strong>
+                    </p>
                     <label className="field">
                       <span>Your name</span>
                       <select
                         value={selectedJoinParticipantId}
                         onChange={(event) => setSelectedJoinParticipantId(event.target.value)}
-                        disabled={!joinPreviewRoundId || joinPreviewSnapshot.loading}
+                        disabled={!joinPreviewRoundId || joinPreviewSnapshot.loading || !joinPreviewSnapshot.round}
                       >
                         <option value="">
                           {joinPreviewRoundId
                             ? joinPreviewSnapshot.loading
                               ? 'Loading participants...'
+                              : !joinPreviewSnapshot.round
+                                ? 'Room not found'
                               : sortedJoinPreviewParticipants.length > 0
                                 ? 'Choose your name'
                                 : 'No participants added yet'
@@ -567,6 +615,9 @@ function App() {
                         ))}
                       </select>
                     </label>
+                    {joinPreviewRoundId && !joinPreviewSnapshot.loading && !joinPreviewSnapshot.round ? (
+                      <p className="muted">That room code was not found. Go back and check the code.</p>
+                    ) : null}
                     {joinPreviewRoundId && sortedJoinPreviewParticipants.length > 0 ? (
                       <div className="table-wrap compact-table">
                         <table>
@@ -595,13 +646,22 @@ function App() {
                       <button
                         className="secondary-button"
                         onClick={handleJoinRound}
-                        disabled={Boolean(busyAction) || !selectedJoinParticipantId}
+                        disabled={
+                          Boolean(busyAction) ||
+                          !selectedJoinParticipantId ||
+                          !joinPreviewRoundId ||
+                          !joinPreviewSnapshot.round
+                        }
                       >
                         {busyAction === 'join-round' ? 'Joining...' : 'Join round'}
                       </button>
                       <button
                         className="ghost-button"
-                        onClick={() => setLandingStep('home')}
+                        onClick={() => {
+                          setJoinPreviewRoundId(null)
+                          setSelectedJoinParticipantId('')
+                          setLandingStep('participant-room')
+                        }}
                         disabled={Boolean(busyAction)}
                       >
                         Back
