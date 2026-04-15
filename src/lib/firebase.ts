@@ -12,7 +12,14 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 }
 
-const requiredKeys = Object.values(firebaseConfig)
+const requiredKeys = [
+  firebaseConfig.apiKey,
+  firebaseConfig.authDomain,
+  firebaseConfig.projectId,
+  firebaseConfig.storageBucket,
+  firebaseConfig.messagingSenderId,
+  firebaseConfig.appId,
+]
 const firebaseReady = requiredKeys.every((value) => typeof value === 'string' && value.length > 0)
 
 const app = firebaseReady ? initializeApp(firebaseConfig) : null
@@ -21,7 +28,7 @@ export const db = app ? getFirestore(app) : null
 
 if (app && typeof window !== 'undefined') {
   void isSupported().then((supported) => {
-    if (supported) {
+    if (supported && firebaseConfig.measurementId) {
       getAnalytics(app)
     }
   })
