@@ -48,6 +48,15 @@ function normalizeNames(input: string[]) {
   return [...new Set(input.map((name) => name.trim()).filter(Boolean))]
 }
 
+function nextInitialPrecedence(participants: Participant[]) {
+  const highest = participants.reduce(
+    (maxValue, participant) => Math.max(maxValue, participant.initialPrecedence),
+    0,
+  )
+
+  return highest + 1
+}
+
 export async function createRound(name: string, participantNames: string[]) {
   const roundId = createRoundId()
   const timestamp = now()
@@ -72,6 +81,7 @@ export async function createRound(name: string, participantNames: string[]) {
     const participant: Participant = {
       id: participantDoc.id,
       name: participantName,
+      initialPrecedence: cleanedNames.indexOf(participantName) + 1,
       speakCount: 0,
       lastActionTime: null,
     }
@@ -98,8 +108,8 @@ export async function addParticipant(roundId: string, name: string) {
   }
 
   const participantSnapshots = await getDocs(query(participantsRef(roundId)))
-  const alreadyExists = participantSnapshots.docs.some((snapshot) => {
-    const participant = snapshot.data() as Participant
+  const existingParticipants = participantSnapshots.docs.map((snapshot) => snapshot.data() as Participant)
+  const alreadyExists = existingParticipants.some((participant) => {
     return participant.name.toLowerCase() === trimmedName.toLowerCase()
   })
 
@@ -112,6 +122,7 @@ export async function addParticipant(roundId: string, name: string) {
   const participant: Participant = {
     id: participantDoc.id,
     name: trimmedName,
+    initialPrecedence: nextInitialPrecedence(existingParticipants),
     speakCount: 0,
     lastActionTime: null,
   }
@@ -122,11 +133,11 @@ export async function addParticipant(roundId: string, name: string) {
   await batch.commit()
 }
 
-export async function joinParticipant(roundId: string, name: string) {
-  const trimmedName = name.trim()
+export async function joinParticipant(roundId: string, participantId: string) {
+  const trimmedId = participantId.trim()
 
-  if (!trimmedName) {
-    throw new Error('Enter your name before joining the round.')
+  if (!trimmedId) {
+    throw new Error('Choose your name before joining the round.')
   }
 
   const roundSnapshot = await getDoc(roundRef(roundId))
@@ -135,30 +146,13 @@ export async function joinParticipant(roundId: string, name: string) {
     throw new Error('Round not found.')
   }
 
-  const participantSnapshots = await getDocs(query(participantsRef(roundId)))
-  const existingParticipant = participantSnapshots.docs
-    .map((snapshot) => snapshot.data() as Participant)
-    .find((participant) => participant.name.toLowerCase() === trimmedName.toLowerCase())
+  const participantSnapshot = await getDoc(doc(participantsRef(roundId), trimmedId))
 
-  if (existingParticipant) {
-    return existingParticipant.id
+  if (!participantSnapshot.exists()) {
+    throw new Error('That participant is not on the precedence sheet yet.')
   }
 
-  const timestamp = now()
-  const participantDoc = doc(participantsRef(roundId))
-  const participant: Participant = {
-    id: participantDoc.id,
-    name: trimmedName,
-    speakCount: 0,
-    lastActionTime: null,
-  }
-  const batch = writeBatch(assertDb())
-
-  batch.set(participantDoc, participant)
-  batch.set(roundRef(roundId), { updatedAt: timestamp }, { merge: true })
-  await batch.commit()
-
-  return participant.id
+  return trimmedId
 }
 
 export async function updateParticipant(roundId: string, participant: Participant) {
@@ -182,6 +176,7 @@ export async function updateParticipant(roundId: string, participant: Participan
     {
       ...participant,
       name: trimmedName,
+      initialPrecedence: Math.max(1, participant.initialPrecedence),
       speakCount: Math.max(0, participant.speakCount),
     },
     { merge: true },

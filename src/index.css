@@ -75,7 +75,8 @@ select {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   outline: 2px solid rgba(103, 232, 249, 0.35);
   border-color: var(--accent-strong);
 }
@@ -495,6 +496,10 @@ p {
   overflow: auto;
   border-radius: 18px;
   border: 1px solid var(--border);
+}
+
+.compact-table {
+  margin-top: 1rem;
 }
 
 table {

@@ -19,6 +19,7 @@ export interface Round {
 export interface Participant {
   id: string
   name: string
+  initialPrecedence: number
   speakCount: number
   lastActionTime: number | null
 }

@@ -1,15 +1,25 @@
 import type { Action, ActionType, Participant } from '../types'
 
-const recencyValue = (participant: Participant) => participant.lastActionTime ?? 0
-
 export function sortParticipants(participants: Participant[]): Participant[] {
   return [...participants].sort((left, right) => {
     if (left.speakCount !== right.speakCount) {
       return left.speakCount - right.speakCount
     }
 
-    if (recencyValue(left) !== recencyValue(right)) {
-      return recencyValue(left) - recencyValue(right)
+    if (left.lastActionTime === null && right.lastActionTime === null) {
+      if (left.initialPrecedence !== right.initialPrecedence) {
+        return left.initialPrecedence - right.initialPrecedence
+      }
+    } else if (left.lastActionTime === null) {
+      return -1
+    } else if (right.lastActionTime === null) {
+      return 1
+    } else if (left.lastActionTime !== right.lastActionTime) {
+      return left.lastActionTime - right.lastActionTime
+    }
+
+    if (left.initialPrecedence !== right.initialPrecedence) {
+      return left.initialPrecedence - right.initialPrecedence
     }
 
     return left.name.localeCompare(right.name)

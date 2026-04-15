@@ -21,6 +21,7 @@ type LandingStep = 'home' | 'po' | 'participant'
 
 type EditableParticipant = {
   name: string
+  initialPrecedence: string
   speakCount: string
   lastActionTime: string
 }
@@ -80,6 +81,7 @@ function parseDateTimeInput(value: string) {
 function createEditableParticipant(participant: Participant): EditableParticipant {
   return {
     name: participant.name,
+    initialPrecedence: String(participant.initialPrecedence),
     speakCount: String(participant.speakCount),
     lastActionTime: formatDateTimeInput(participant.lastActionTime),
   }
@@ -111,7 +113,7 @@ function App() {
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [roundNameInput, setRoundNameInput] = useState('NSDA Round 1')
   const [joinRoundCode, setJoinRoundCode] = useState(getInitialRoundId() ?? '')
-  const [joinNameInput, setJoinNameInput] = useState('')
+  const [selectedJoinParticipantId, setSelectedJoinParticipantId] = useState('')
   const [newParticipantName, setNewParticipantName] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [uiError, setUiError] = useState<string | null>(null)
@@ -122,6 +124,8 @@ function App() {
   const [editableParticipants, setEditableParticipants] = useState<Record<string, EditableParticipant>>({})
 
   const snapshot = useRoundRealtime(currentRoundId)
+  const joinPreviewRoundId = !currentRoundId && landingStep === 'participant' ? joinRoundCode.trim().toUpperCase() || null : null
+  const joinPreviewSnapshot = useRoundRealtime(joinPreviewRoundId)
 
   const participantIndex = useMemo(
     () => buildParticipantIndex(snapshot.participants),
@@ -152,6 +156,10 @@ function App() {
     (snapshot.round?.placardWindowEndsAt ?? 0) - currentTime,
   )
   const placardsOpen = placardWindowRemainingMs > 0
+  const sortedJoinPreviewParticipants = useMemo(
+    () => sortParticipants(joinPreviewSnapshot.participants),
+    [joinPreviewSnapshot.participants],
+  )
 
   useEffect(() => {
     const onHashChange = () => {
@@ -237,7 +245,7 @@ function App() {
     setRole(null)
     setCurrentRoundId(null)
     setJoinRoundCode('')
-    setJoinNameInput('')
+    setSelectedJoinParticipantId('')
     setJoinedParticipantId(null)
     setUiError(null)
     setLandingStep('home')
@@ -271,7 +279,7 @@ function App() {
     }
 
     await runMutation('join-round', async () => {
-      const participantId = await joinParticipant(normalizedCode, joinNameInput)
+      const participantId = await joinParticipant(normalizedCode, selectedJoinParticipantId)
       window.localStorage.setItem(participantStorageKey(normalizedCode), participantId)
       setJoinedParticipantId(participantId)
       setRole('participant')
@@ -304,11 +312,13 @@ function App() {
     }
 
     const speakCount = Number.parseInt(draft.speakCount, 10)
+    const initialPrecedence = Number.parseInt(draft.initialPrecedence, 10)
 
     await runMutation(`save-participant-${participantId}`, async () => {
       await updateParticipant(currentRoundId, {
         ...existing,
         name: draft.name,
+        initialPrecedence: Number.isNaN(initialPrecedence) ? existing.initialPrecedence : initialPrecedence,
         speakCount: Number.isNaN(speakCount) ? 0 : speakCount,
         lastActionTime: parseDateTimeInput(draft.lastActionTime),
       })
@@ -527,23 +537,65 @@ function App() {
                       <span>Round code</span>
                       <input
                         value={joinRoundCode}
-                        onChange={(event) => setJoinRoundCode(event.target.value.toUpperCase())}
+                        onChange={(event) => {
+                          setJoinRoundCode(event.target.value.toUpperCase())
+                          setSelectedJoinParticipantId('')
+                        }}
                         placeholder="Paste the PO's round code"
                       />
                     </label>
                     <label className="field">
                       <span>Your name</span>
-                      <input
-                        value={joinNameInput}
-                        onChange={(event) => setJoinNameInput(event.target.value)}
-                        placeholder="Enter your name"
-                      />
+                      <select
+                        value={selectedJoinParticipantId}
+                        onChange={(event) => setSelectedJoinParticipantId(event.target.value)}
+                        disabled={!joinPreviewRoundId || joinPreviewSnapshot.loading}
+                      >
+                        <option value="">
+                          {joinPreviewRoundId
+                            ? joinPreviewSnapshot.loading
+                              ? 'Loading participants...'
+                              : sortedJoinPreviewParticipants.length > 0
+                                ? 'Choose your name'
+                                : 'No participants added yet'
+                            : 'Enter a round code first'}
+                        </option>
+                        {sortedJoinPreviewParticipants.map((participant) => (
+                          <option key={participant.id} value={participant.id}>
+                            {participant.name}
+                          </option>
+                        ))}
+                      </select>
                     </label>
+                    {joinPreviewRoundId && sortedJoinPreviewParticipants.length > 0 ? (
+                      <div className="table-wrap compact-table">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Initial</th>
+                              <th>Name</th>
+                              <th>Speeches</th>
+                              <th>Recency</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sortedJoinPreviewParticipants.map((participant) => (
+                              <tr key={participant.id}>
+                                <td>{participant.initialPrecedence}</td>
+                                <td>{participant.name}</td>
+                                <td>{participant.speakCount}</td>
+                                <td>{formatTime(participant.lastActionTime)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
                     <div className="button-row flow-actions">
                       <button
                         className="secondary-button"
                         onClick={handleJoinRound}
-                        disabled={Boolean(busyAction)}
+                        disabled={Boolean(busyAction) || !selectedJoinParticipantId}
                       >
                         {busyAction === 'join-round' ? 'Joining...' : 'Join round'}
                       </button>
@@ -638,13 +690,14 @@ function App() {
                     <thead>
                       <tr>
                         <th>Name</th>
+                        <th>Initial Order</th>
                         <th>Precedence</th>
                         <th>Last Action</th>
                         <th>Save</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {snapshot.participants.map((participant) => {
+                      {sortedParticipants.map((participant) => {
                         const draft = editableParticipants[participant.id] ?? createEditableParticipant(participant)
 
                         return (
@@ -661,6 +714,21 @@ function App() {
                                     },
                                   }))
                                 }
+                              />
+                            </td>
+                            <td>
+                              <input
+                                value={draft.initialPrecedence}
+                                onChange={(event) =>
+                                  setEditableParticipants((current) => ({
+                                    ...current,
+                                    [participant.id]: {
+                                      ...draft,
+                                      initialPrecedence: event.target.value,
+                                    },
+                                  }))
+                                }
+                                inputMode="numeric"
                               />
                             </td>
                             <td>
@@ -846,6 +914,7 @@ function App() {
                     <thead>
                       <tr>
                         <th>Rank</th>
+                        <th>Initial</th>
                         <th>Name</th>
                         <th>Speak Count</th>
                         <th>Last Action</th>
@@ -863,6 +932,7 @@ function App() {
                         return (
                           <tr key={participant.id}>
                             <td>{index + 1}</td>
+                            <td>{participant.initialPrecedence}</td>
                             <td>{participant.name}</td>
                             <td>{participant.speakCount}</td>
                             <td>{formatTime(participant.lastActionTime)}</td>
@@ -937,7 +1007,9 @@ function App() {
                   <article className="summary-card">
                     <span className="card-label">Your standing</span>
                     <strong>
-                      {joinedParticipant ? `Precedence ${joinedParticipant.speakCount}` : 'Not found'}
+                      {joinedParticipant
+                        ? `Initial ${joinedParticipant.initialPrecedence} • Precedence ${joinedParticipant.speakCount}`
+                        : 'Not found'}
                     </strong>
                     <span>
                       {joinedParticipant
@@ -959,6 +1031,43 @@ function App() {
                 <button className="ghost-button" onClick={leaveRound}>
                   Leave round
                 </button>
+
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Initial</th>
+                        <th>Name</th>
+                        <th>Precedence</th>
+                        <th>Recency</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedParticipants.map((participant, index) => {
+                        const status = getParticipantStatus(
+                          participant.id,
+                          snapshot.round?.activeParticipantId ?? null,
+                          snapshot.actions,
+                        )
+
+                        return (
+                          <tr key={participant.id}>
+                            <td>{index + 1}</td>
+                            <td>{participant.initialPrecedence}</td>
+                            <td>{participant.name}</td>
+                            <td>{participant.speakCount}</td>
+                            <td>{formatTime(participant.lastActionTime)}</td>
+                            <td>
+                              <span className={`status-chip ${status}`}>{status}</span>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </section>
             </main>
           ) : (
