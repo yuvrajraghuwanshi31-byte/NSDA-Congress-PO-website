@@ -5,9 +5,12 @@ import { buildParticipantIndex, getParticipantStatus, rankPendingActions, sortPa
 import {
   addParticipant,
   approveNextAction,
+  castVote,
+  closeVote,
   createRound,
   endSpeechTimer,
   joinParticipant,
+  openVote,
   openPlacardWindow,
   requestAction,
   skipAction,
@@ -16,7 +19,7 @@ import {
   undoLatestChange,
   updateParticipant,
 } from './lib/roundStore'
-import type { Participant } from './types'
+import type { Participant, VoteRequirement } from './types'
 
 type UserRole = 'po' | 'participant'
 type LandingStep = 'home' | 'po' | 'participant-room' | 'participant-name'
@@ -93,6 +96,7 @@ function App() {
   const [joinRoundCode, setJoinRoundCode] = useState(getInitialRoundId() ?? '')
   const [joinPreviewRoundId, setJoinPreviewRoundId] = useState<string | null>(null)
   const [selectedJoinParticipantId, setSelectedJoinParticipantId] = useState('')
+  const [voteRequirement, setVoteRequirement] = useState<VoteRequirement>('majority')
   const [newParticipantName, setNewParticipantName] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [uiError, setUiError] = useState<string | null>(null)
@@ -119,6 +123,18 @@ function App() {
   )
   const canUndo = snapshot.history.some((entry) => !entry.undone)
   const joinedParticipant = joinedParticipantId ? participantIndex.get(joinedParticipantId) ?? null : null
+  const activeVote =
+    snapshot.round?.activeVoteId
+      ? snapshot.votes.find((vote) => vote.id === snapshot.round?.activeVoteId) ?? null
+      : null
+  const latestClosedVote = snapshot.votes.find((vote) => vote.status === 'closed') ?? null
+  const activeVoteBallots = activeVote
+    ? snapshot.ballots.filter((ballot) => ballot.voteId === activeVote.id)
+    : []
+  const currentParticipantBallot =
+    activeVote && joinedParticipantId
+      ? activeVoteBallots.find((ballot) => ballot.participantId === joinedParticipantId) ?? null
+      : null
   const hasPendingSpeak = Boolean(
     joinedParticipantId &&
       snapshot.actions.some(
@@ -135,6 +151,7 @@ function App() {
   )
   const placardsOpen = placardWindowRemainingMs > 0
   const speechPhase = snapshot.round?.speechPhase ?? 'idle'
+  const voteOpen = Boolean(activeVote && activeVote.status === 'open')
   const sortedJoinPreviewParticipants = useMemo(
     () => sortParticipants(joinPreviewSnapshot.participants),
     [joinPreviewSnapshot.participants],
@@ -194,6 +211,18 @@ function App() {
 
     return () => window.clearInterval(timer)
   }, [snapshot.round?.placardWindowEndsAt])
+
+  useEffect(() => {
+    if (!currentRoundId || !activeVote || activeVote.status !== 'open') {
+      return
+    }
+
+    if (snapshot.participants.length === 0 || activeVoteBallots.length < snapshot.participants.length) {
+      return
+    }
+
+    void closeVote(currentRoundId).catch(() => {})
+  }, [activeVote, activeVoteBallots.length, currentRoundId, snapshot.participants.length])
 
   async function runMutation(key: string, action: () => Promise<void>) {
     setBusyAction(key)
@@ -334,6 +363,26 @@ function App() {
 
     await runMutation('open-placards', async () => {
       await openPlacardWindow(currentRoundId, 10000)
+    })
+  }
+
+  async function handleOpenVote() {
+    if (!currentRoundId) {
+      return
+    }
+
+    await runMutation('open-vote', async () => {
+      await openVote(currentRoundId, voteRequirement)
+    })
+  }
+
+  async function handleCastVote(choice: 'aye' | 'nay' | 'abstain') {
+    if (!currentRoundId || !activeVote || !joinedParticipantId) {
+      return
+    }
+
+    await runMutation(`cast-vote-${choice}`, async () => {
+      await castVote(currentRoundId, activeVote.id, joinedParticipantId, choice)
     })
   }
 
@@ -619,9 +668,8 @@ function App() {
                         <table>
                           <thead>
                             <tr>
-                              <th>Initial</th>
-                              <th>Name</th>
                               <th>Precedence</th>
+                              <th>Name</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -629,7 +677,6 @@ function App() {
                               <tr key={participant.id}>
                                 <td>{participant.initialPrecedence}</td>
                                 <td>{participant.name}</td>
-                                <td>{participant.speakCount}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -744,7 +791,7 @@ function App() {
                     <thead>
                       <tr>
                         <th>Name</th>
-                        <th>Initial Order</th>
+                        <th>Precedence</th>
                         <th>Save</th>
                       </tr>
                     </thead>
@@ -821,7 +868,7 @@ function App() {
                       </strong>
                       <span>
                         {nextSpeaker
-                          ? `Initial ${participantIndex.get(nextSpeaker.participantId)?.initialPrecedence ?? '-'} • Precedence ${participantIndex.get(nextSpeaker.participantId)?.speakCount ?? 0}`
+                          ? `Precedence ${participantIndex.get(nextSpeaker.participantId)?.initialPrecedence ?? '-'}`
                           : 'Open placards to let students raise for the next speech.'}
                       </span>
                     </div>
@@ -911,7 +958,7 @@ function App() {
                     </strong>
                     <span>
                       {snapshot.round.activeParticipantId
-                        ? `Initial ${participantIndex.get(snapshot.round.activeParticipantId)?.initialPrecedence ?? '-'} • Precedence ${participantIndex.get(snapshot.round.activeParticipantId)?.speakCount ?? 0}`
+                        ? `Precedence ${participantIndex.get(snapshot.round.activeParticipantId)?.initialPrecedence ?? '-'}`
                         : 'Approve a raised placard to mark the active speaker.'}
                     </span>
                   </article>
@@ -920,6 +967,50 @@ function App() {
                     <strong>{snapshot.round.id}</strong>
                     <span>{copied ? 'Copied to clipboard' : 'Share this code so students can join.'}</span>
                   </article>
+                </div>
+
+                <div className="summary-card vote-card">
+                  <span className="card-label">Vote controls</span>
+                  <div className="vote-controls">
+                    <select
+                      value={voteRequirement}
+                      onChange={(event) => setVoteRequirement(event.target.value as VoteRequirement)}
+                      disabled={voteOpen || Boolean(busyAction)}
+                    >
+                      <option value="majority">Majority</option>
+                      <option value="two_thirds">2/3 rounding up</option>
+                    </select>
+                    <button
+                      className="secondary-button"
+                      onClick={handleOpenVote}
+                      disabled={voteOpen || Boolean(busyAction)}
+                    >
+                      {voteOpen
+                        ? 'Vote open'
+                        : busyAction === 'open-vote'
+                          ? 'Opening...'
+                          : 'Open vote'}
+                    </button>
+                  </div>
+                  <span>
+                    {activeVote
+                      ? `${activeVote.requirement === 'majority' ? 'Majority' : '2/3 rounding up'} vote in progress • ${activeVoteBallots.length}/${snapshot.participants.length} voted`
+                      : 'Open a floor vote when the chamber needs to vote aye, nay, or abstain.'}
+                  </span>
+                </div>
+
+                <div className="summary-card vote-card">
+                  <span className="card-label">Last vote record</span>
+                  <strong>
+                    {latestClosedVote
+                      ? `${latestClosedVote.ayeCount} ayes to ${latestClosedVote.nayCount} nays`
+                      : 'No vote record yet'}
+                  </strong>
+                  <span>
+                    {latestClosedVote
+                      ? `${latestClosedVote.abstainCount} abstains • ${latestClosedVote.requirement === 'majority' ? 'Majority' : '2/3 rounding up'} • ${latestClosedVote.passed ? 'Passed' : 'Failed'}`
+                      : 'Completed votes will appear here once everyone has voted.'}
+                  </span>
                 </div>
 
                 <div className="button-row">
@@ -952,7 +1043,7 @@ function App() {
                         <div className="participant-head">
                           <div>
                             <h3>{participant.name}</h3>
-                            <p>Initial {participant.initialPrecedence} • Precedence {participant.speakCount}</p>
+                            <p>Precedence {participant.initialPrecedence}</p>
                           </div>
                           <span className={`status-chip ${status}`}>{status}</span>
                         </div>
@@ -974,9 +1065,8 @@ function App() {
                     <thead>
                       <tr>
                         <th>Rank</th>
-                        <th>Initial</th>
-                        <th>Name</th>
                         <th>Precedence</th>
+                        <th>Name</th>
                         <th>Status</th>
                       </tr>
                     </thead>
@@ -993,7 +1083,6 @@ function App() {
                             <td>{index + 1}</td>
                             <td>{participant.initialPrecedence}</td>
                             <td>{participant.name}</td>
-                            <td>{participant.speakCount}</td>
                             <td>
                               <span className={`status-chip ${status}`}>{status}</span>
                             </td>
@@ -1066,12 +1155,12 @@ function App() {
                     <span className="card-label">Your standing</span>
                     <strong>
                       {joinedParticipant
-                        ? `Initial ${joinedParticipant.initialPrecedence} • Precedence ${joinedParticipant.speakCount}`
+                        ? `Precedence ${joinedParticipant.initialPrecedence}`
                         : 'Not found'}
                     </strong>
                     <span>
                       {joinedParticipant
-                        ? `Last action ${formatTime(joinedParticipant.lastActionTime)}`
+                        ? joinedParticipant.name
                         : 'Ask the PO to confirm your name is in the round.'}
                     </span>
                   </article>
@@ -1090,14 +1179,54 @@ function App() {
                   Leave round
                 </button>
 
+                <div className="summary-card vote-card">
+                  <span className="card-label">Vote</span>
+                  <strong>
+                    {voteOpen
+                      ? `${activeVote?.requirement === 'majority' ? 'Majority' : '2/3 rounding up'} vote open`
+                      : latestClosedVote
+                        ? `${latestClosedVote.ayeCount} ayes to ${latestClosedVote.nayCount} nays`
+                        : 'No active vote'}
+                  </strong>
+                  <span>
+                    {voteOpen
+                      ? `${activeVoteBallots.length} of ${snapshot.participants.length} have voted`
+                      : latestClosedVote
+                        ? `${latestClosedVote.abstainCount} abstains`
+                        : 'The PO can open a vote at any time.'}
+                  </span>
+                  <div className="vote-actions">
+                    <button
+                      className="secondary-button"
+                      onClick={() => handleCastVote('aye')}
+                      disabled={!voteOpen || Boolean(busyAction)}
+                    >
+                      {currentParticipantBallot?.choice === 'aye' ? 'Aye selected' : 'Aye'}
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => handleCastVote('nay')}
+                      disabled={!voteOpen || Boolean(busyAction)}
+                    >
+                      {currentParticipantBallot?.choice === 'nay' ? 'Nay selected' : 'Nay'}
+                    </button>
+                    <button
+                      className="ghost-button"
+                      onClick={() => handleCastVote('abstain')}
+                      disabled={!voteOpen || Boolean(busyAction)}
+                    >
+                      {currentParticipantBallot?.choice === 'abstain' ? 'Abstain selected' : 'Abstain'}
+                    </button>
+                  </div>
+                </div>
+
                 <div className="table-wrap">
                   <table>
                     <thead>
                       <tr>
                         <th>Rank</th>
-                        <th>Initial</th>
-                        <th>Name</th>
                         <th>Precedence</th>
+                        <th>Name</th>
                         <th>Status</th>
                       </tr>
                     </thead>
@@ -1114,7 +1243,6 @@ function App() {
                             <td>{index + 1}</td>
                             <td>{participant.initialPrecedence}</td>
                             <td>{participant.name}</td>
-                            <td>{participant.speakCount}</td>
                             <td>
                               <span className={`status-chip ${status}`}>{status}</span>
                             </td>

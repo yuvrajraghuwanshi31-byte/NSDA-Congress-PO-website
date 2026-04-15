@@ -10,7 +10,17 @@ import {
 } from 'firebase/firestore'
 import { db } from './firebase'
 import { pickFeaturedAction, rankPendingActions } from './roundEngine'
-import type { Action, ActionType, HistoryEntry, Participant, Round } from '../types'
+import type {
+  Action,
+  ActionType,
+  Ballot,
+  HistoryEntry,
+  Participant,
+  Round,
+  Vote,
+  VoteChoice,
+  VoteRequirement,
+} from '../types'
 
 function assertDb() {
   if (!db) {
@@ -34,6 +44,14 @@ function actionsRef(roundId: string) {
 
 function historyRef(roundId: string) {
   return collection(roundRef(roundId), 'history')
+}
+
+function votesRef(roundId: string) {
+  return collection(roundRef(roundId), 'votes')
+}
+
+function ballotsRef(roundId: string) {
+  return collection(roundRef(roundId), 'ballots')
 }
 
 function now() {
@@ -69,6 +87,7 @@ export async function createRound(name: string, participantNames: string[]) {
     placardWindowEndsAt: null,
     speechPhase: 'idle',
     activeSpeechStartedAt: null,
+    activeVoteId: null,
     activeActionId: null,
     activeParticipantId: null,
     activeType: null,
@@ -200,6 +219,7 @@ export async function startRound(roundId: string) {
     placardWindowEndsAt: null,
     speechPhase: 'idle',
     activeSpeechStartedAt: null,
+    activeVoteId: null,
     updatedAt: timestamp,
   })
 }
@@ -227,6 +247,176 @@ export async function openPlacardWindow(roundId: string, durationMs = 10000) {
 async function setRoundFields(roundId: string, fields: Partial<Round>) {
   const batch = writeBatch(assertDb())
   batch.set(roundRef(roundId), fields, { merge: true })
+  await batch.commit()
+}
+
+function computeVoteThreshold(requirement: VoteRequirement, totalVotes: number) {
+  if (requirement === 'two_thirds') {
+    return Math.ceil((totalVotes * 2) / 3)
+  }
+
+  return Math.floor(totalVotes / 2) + 1
+}
+
+export async function openVote(roundId: string, requirement: VoteRequirement) {
+  const roundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!roundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const round = roundSnapshot.data() as Round
+
+  if (round.status !== 'live') {
+    throw new Error('Start the round before opening a vote.')
+  }
+
+  if (round.activeVoteId) {
+    throw new Error('A vote is already open.')
+  }
+
+  const timestamp = now()
+  const voteDoc = doc(votesRef(roundId))
+  const vote: Vote = {
+    id: voteDoc.id,
+    requirement,
+    status: 'open',
+    openedAt: timestamp,
+    endsAt: null,
+    closedAt: null,
+    ayeCount: 0,
+    nayCount: 0,
+    abstainCount: 0,
+    thresholdNeeded: null,
+    passed: null,
+  }
+  const batch = writeBatch(assertDb())
+
+  batch.set(voteDoc, vote)
+  batch.set(
+    roundRef(roundId),
+    {
+      activeVoteId: vote.id,
+      updatedAt: timestamp,
+    },
+    { merge: true },
+  )
+  await batch.commit()
+}
+
+export async function castVote(
+  roundId: string,
+  voteId: string,
+  participantId: string,
+  choice: VoteChoice,
+) {
+  const roundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!roundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const round = roundSnapshot.data() as Round
+
+  if (round.activeVoteId !== voteId) {
+    throw new Error('That vote is no longer open.')
+  }
+
+  const voteSnapshot = await getDoc(doc(votesRef(roundId), voteId))
+
+  if (!voteSnapshot.exists()) {
+    throw new Error('Vote not found.')
+  }
+
+  const vote = voteSnapshot.data() as Vote
+
+  if (vote.status !== 'open') {
+    throw new Error('Voting has already ended.')
+  }
+
+  const participantSnapshot = await getDoc(doc(participantsRef(roundId), participantId))
+
+  if (!participantSnapshot.exists()) {
+    throw new Error('Participant not found.')
+  }
+
+  const timestamp = now()
+  const ballotDoc = doc(ballotsRef(roundId), `${voteId}_${participantId}`)
+  const ballot: Ballot = {
+    id: ballotDoc.id,
+    voteId,
+    participantId,
+    choice,
+    timestamp,
+  }
+  const batch = writeBatch(assertDb())
+
+  batch.set(ballotDoc, ballot)
+  batch.set(roundRef(roundId), { updatedAt: timestamp }, { merge: true })
+  await batch.commit()
+}
+
+export async function closeVote(roundId: string) {
+  const roundSnapshot = await getDoc(roundRef(roundId))
+
+  if (!roundSnapshot.exists()) {
+    throw new Error('Round not found.')
+  }
+
+  const round = roundSnapshot.data() as Round
+
+  if (!round.activeVoteId) {
+    return
+  }
+
+  const voteSnapshot = await getDoc(doc(votesRef(roundId), round.activeVoteId))
+
+  if (!voteSnapshot.exists()) {
+    await setRoundFields(roundId, { activeVoteId: null, updatedAt: now() })
+    return
+  }
+
+  const vote = voteSnapshot.data() as Vote
+
+  if (vote.status === 'closed') {
+    await setRoundFields(roundId, { activeVoteId: null, updatedAt: now() })
+    return
+  }
+
+  const ballotSnapshots = await getDocs(
+    query(ballotsRef(roundId), where('voteId', '==', vote.id)),
+  )
+  const ballots = ballotSnapshots.docs.map((snapshot) => snapshot.data() as Ballot)
+  const ayeCount = ballots.filter((ballot) => ballot.choice === 'aye').length
+  const nayCount = ballots.filter((ballot) => ballot.choice === 'nay').length
+  const abstainCount = ballots.filter((ballot) => ballot.choice === 'abstain').length
+  const totalVotes = ayeCount + nayCount
+  const thresholdNeeded = computeVoteThreshold(vote.requirement, totalVotes)
+  const passed = totalVotes > 0 ? ayeCount >= thresholdNeeded : false
+  const timestamp = now()
+  const batch = writeBatch(assertDb())
+
+  batch.set(
+    doc(votesRef(roundId), vote.id),
+    {
+      ...vote,
+      status: 'closed',
+      closedAt: timestamp,
+      ayeCount,
+      nayCount,
+      abstainCount,
+      thresholdNeeded,
+      passed,
+    },
+  )
+  batch.set(
+    roundRef(roundId),
+    {
+      activeVoteId: null,
+      updatedAt: timestamp,
+    },
+    { merge: true },
+  )
   await batch.commit()
 }
 

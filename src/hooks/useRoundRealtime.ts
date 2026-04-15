@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import { collection, doc, onSnapshot, orderBy, query } from 'firebase/firestore'
 import { db, firebaseReady } from '../lib/firebase'
-import type { Action, HistoryEntry, Participant, Round, RoundSnapshot } from '../types'
+import type { Action, Ballot, HistoryEntry, Participant, Round, RoundSnapshot, Vote } from '../types'
 
 const emptySnapshot: RoundSnapshot = {
   round: null,
   participants: [],
   actions: [],
   history: [],
+  votes: [],
+  ballots: [],
   loading: false,
   error: null,
   firebaseReady,
@@ -95,6 +97,32 @@ export function useRoundRealtime(roundId: string | null): RoundSnapshot {
           setSnapshot((current) => ({
             ...current,
             history: historySnapshot.docs.map((docSnapshot) => docSnapshot.data() as HistoryEntry),
+            loading: false,
+          }))
+        },
+        (error) => {
+          setSnapshot((current) => ({ ...current, loading: false, error: error.message }))
+        },
+      ),
+      onSnapshot(
+        query(collection(db, 'rounds', roundId, 'votes'), orderBy('openedAt', 'desc')),
+        (votesSnapshot) => {
+          setSnapshot((current) => ({
+            ...current,
+            votes: votesSnapshot.docs.map((docSnapshot) => docSnapshot.data() as Vote),
+            loading: false,
+          }))
+        },
+        (error) => {
+          setSnapshot((current) => ({ ...current, loading: false, error: error.message }))
+        },
+      ),
+      onSnapshot(
+        query(collection(db, 'rounds', roundId, 'ballots')),
+        (ballotsSnapshot) => {
+          setSnapshot((current) => ({
+            ...current,
+            ballots: ballotsSnapshot.docs.map((docSnapshot) => docSnapshot.data() as Ballot),
             loading: false,
           }))
         },

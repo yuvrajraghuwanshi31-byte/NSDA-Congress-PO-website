@@ -488,6 +488,26 @@ p {
   gap: 0.45rem;
 }
 
+.vote-card {
+  margin-bottom: 1rem;
+}
+
+.vote-controls,
+.vote-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.vote-controls {
+  margin-top: 0.25rem;
+}
+
+.vote-controls select,
+.vote-actions button {
+  flex: 1;
+}
+
 .summary-card strong {
   font-size: 1.35rem;
 }
@@ -604,7 +624,9 @@ td input {
   .participant-head,
   .command-row,
   .button-row,
-  .add-participant {
+  .add-participant,
+  .vote-controls,
+  .vote-actions {
     flex-direction: column;
   }
 
