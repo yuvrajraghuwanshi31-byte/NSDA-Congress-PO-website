@@ -230,6 +230,15 @@ p {
   margin: 0 auto;
 }
 
+.centered-flow {
+  display: grid;
+  place-items: center;
+}
+
+.flow-card {
+  width: min(100%, 38rem);
+}
+
 .setup-card p {
   color: var(--text-muted);
   margin-top: 0.5rem;
@@ -265,7 +274,8 @@ p {
 .command-row,
 .participant-actions,
 .add-participant,
-.button-column {
+.button-column,
+.entry-card-actions {
   display: flex;
   gap: 0.75rem;
 }
@@ -278,6 +288,15 @@ p {
 .button-column {
   flex-direction: column;
   margin-top: 1rem;
+}
+
+.entry-card-actions {
+  margin-top: 1.5rem;
+}
+
+.entry-card-actions button,
+.flow-actions button {
+  min-width: 10rem;
 }
 
 .primary-button,

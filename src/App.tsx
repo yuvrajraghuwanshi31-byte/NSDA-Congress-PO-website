@@ -17,6 +17,7 @@ import {
 import type { Participant } from './types'
 
 type UserRole = 'po' | 'participant'
+type LandingStep = 'home' | 'po' | 'participant'
 
 type EditableParticipant = {
   name: string
@@ -42,13 +43,6 @@ function getInitialRole(): UserRole | null {
 
 function participantStorageKey(roundId: string) {
   return `po-live-participant-${roundId}`
-}
-
-function parseParticipantNames(value: string) {
-  return value
-    .split('\n')
-    .map((name) => name.trim())
-    .filter(Boolean)
 }
 
 function formatTime(timestamp: number | null) {
@@ -91,12 +85,31 @@ function createEditableParticipant(participant: Participant): EditableParticipan
   }
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(errorMessage))
+    }, timeoutMs)
+
+    void promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        window.clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
 function App() {
   const [currentRoundId, setCurrentRoundId] = useState<string | null>(getInitialRoundId)
   const [role, setRole] = useState<UserRole | null>(getInitialRole)
+  const [landingStep, setLandingStep] = useState<LandingStep>('home')
   const [currentTime, setCurrentTime] = useState(Date.now())
   const [roundNameInput, setRoundNameInput] = useState('NSDA Round 1')
-  const [seedParticipantsInput, setSeedParticipantsInput] = useState('')
   const [joinRoundCode, setJoinRoundCode] = useState(getInitialRoundId() ?? '')
   const [joinNameInput, setJoinNameInput] = useState('')
   const [newParticipantName, setNewParticipantName] = useState('')
@@ -227,6 +240,7 @@ function App() {
     setJoinNameInput('')
     setJoinedParticipantId(null)
     setUiError(null)
+    setLandingStep('home')
   }
 
   async function handleCreateRound() {
@@ -238,7 +252,11 @@ function App() {
     }
 
     await runMutation('create-round', async () => {
-      const roundId = await createRound(roundName, parseParticipantNames(seedParticipantsInput))
+      const roundId = await withTimeout(
+        createRound(roundName, []),
+        12000,
+        'Creating the round timed out. Check Firestore permissions and try again.',
+      )
       setRole('po')
       selectRound(roundId)
     })
@@ -257,6 +275,7 @@ function App() {
       window.localStorage.setItem(participantStorageKey(normalizedCode), participantId)
       setJoinedParticipantId(participantId)
       setRole('participant')
+      setLandingStep('participant')
       selectRound(normalizedCode)
     })
   }
@@ -424,64 +443,121 @@ function App() {
                 </p>
               </section>
 
-              <section className="entry-grid">
-                <article className="control-card">
-                  <p className="eyebrow">Presiding officer</p>
-                  <h2>Create a round</h2>
-                  <label className="field">
-                    <span>Round name</span>
-                    <input
-                      value={roundNameInput}
-                      onChange={(event) => setRoundNameInput(event.target.value)}
-                      placeholder="NSDA Round 1"
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Optional starting roster</span>
-                    <textarea
-                      value={seedParticipantsInput}
-                      onChange={(event) => setSeedParticipantsInput(event.target.value)}
-                      placeholder={'One participant per line\nAlice\nBen\nRoger'}
-                      rows={6}
-                    />
-                  </label>
-                  <button
-                    className="primary-button"
-                    onClick={handleCreateRound}
-                    disabled={Boolean(busyAction)}
-                  >
-                    {busyAction === 'create-round' ? 'Creating...' : 'Create round as PO'}
-                  </button>
-                </article>
+              {landingStep === 'home' ? (
+                <section className="entry-grid">
+                  <article className="control-card">
+                    <p className="eyebrow">Presiding officer</p>
+                    <h2>Create a round</h2>
+                    <p className="muted">
+                      Start a room, then add or edit the precedence sheet on the next screen.
+                    </p>
+                    <div className="entry-card-actions">
+                      <button
+                        className="primary-button"
+                        onClick={() => {
+                          setUiError(null)
+                          setLandingStep('po')
+                        }}
+                      >
+                        Create round
+                      </button>
+                    </div>
+                  </article>
 
-                <article className="control-card">
-                  <p className="eyebrow">Participant</p>
-                  <h2>Join a round</h2>
-                  <label className="field">
-                    <span>Round code</span>
-                    <input
-                      value={joinRoundCode}
-                      onChange={(event) => setJoinRoundCode(event.target.value.toUpperCase())}
-                      placeholder="Paste the PO's round code"
-                    />
-                  </label>
-                  <label className="field">
-                    <span>Your name</span>
-                    <input
-                      value={joinNameInput}
-                      onChange={(event) => setJoinNameInput(event.target.value)}
-                      placeholder="Enter your name"
-                    />
-                  </label>
-                  <button
-                    className="secondary-button"
-                    onClick={handleJoinRound}
-                    disabled={Boolean(busyAction)}
-                  >
-                    {busyAction === 'join-round' ? 'Joining...' : 'Join round'}
-                  </button>
-                </article>
-              </section>
+                  <article className="control-card">
+                    <p className="eyebrow">Participant</p>
+                    <h2>Join a round</h2>
+                    <p className="muted">
+                      Enter the PO's round code and your name on the next screen to join live.
+                    </p>
+                    <div className="entry-card-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setUiError(null)
+                          setLandingStep('participant')
+                        }}
+                      >
+                        Join round
+                      </button>
+                    </div>
+                  </article>
+                </section>
+              ) : landingStep === 'po' ? (
+                <section className="centered-flow">
+                  <article className="control-card flow-card">
+                    <p className="eyebrow">Presiding officer</p>
+                    <h2>Create your room</h2>
+                    <p className="muted">
+                      Create the round first. You will add participants and set precedence on the
+                      next screen.
+                    </p>
+                    <label className="field">
+                      <span>Round name</span>
+                      <input
+                        value={roundNameInput}
+                        onChange={(event) => setRoundNameInput(event.target.value)}
+                        placeholder="NSDA Round 1"
+                      />
+                    </label>
+                    <div className="button-row flow-actions">
+                      <button
+                        className="primary-button"
+                        onClick={handleCreateRound}
+                        disabled={Boolean(busyAction)}
+                      >
+                        {busyAction === 'create-round' ? 'Creating...' : 'Create round'}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={() => setLandingStep('home')}
+                        disabled={Boolean(busyAction)}
+                      >
+                        Back
+                      </button>
+                    </div>
+                  </article>
+                </section>
+              ) : (
+                <section className="centered-flow">
+                  <article className="control-card flow-card">
+                    <p className="eyebrow">Participant</p>
+                    <h2>Join your room</h2>
+                    <label className="field">
+                      <span>Round code</span>
+                      <input
+                        value={joinRoundCode}
+                        onChange={(event) => setJoinRoundCode(event.target.value.toUpperCase())}
+                        placeholder="Paste the PO's round code"
+                      />
+                    </label>
+                    <label className="field">
+                      <span>Your name</span>
+                      <input
+                        value={joinNameInput}
+                        onChange={(event) => setJoinNameInput(event.target.value)}
+                        placeholder="Enter your name"
+                      />
+                    </label>
+                    <div className="button-row flow-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={handleJoinRound}
+                        disabled={Boolean(busyAction)}
+                      >
+                        {busyAction === 'join-round' ? 'Joining...' : 'Join round'}
+                      </button>
+                      <button
+                        className="ghost-button"
+                        onClick={() => setLandingStep('home')}
+                        disabled={Boolean(busyAction)}
+                      >
+                        Back
+                      </button>
+                    </div>
+                  </article>
+                </section>
+              )}
             </main>
           ) : roundMissing ? (
             <section className="setup-card">
