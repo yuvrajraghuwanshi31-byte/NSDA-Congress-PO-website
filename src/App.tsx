@@ -61,6 +61,13 @@ function formatTime(timestamp: number | null) {
   })
 }
 
+function formatDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 function createEditableParticipant(participant: Participant): EditableParticipant {
   return {
     name: participant.name,
@@ -152,6 +159,10 @@ function App() {
   const placardsOpen = placardWindowRemainingMs > 0
   const speechPhase = snapshot.round?.speechPhase ?? 'idle'
   const voteOpen = Boolean(activeVote && activeVote.status === 'open')
+  const speechElapsedMs =
+    speechPhase === 'timing' && snapshot.round?.activeSpeechStartedAt
+      ? currentTime - snapshot.round.activeSpeechStartedAt
+      : 0
   const sortedJoinPreviewParticipants = useMemo(
     () => sortParticipants(joinPreviewSnapshot.participants),
     [joinPreviewSnapshot.participants],
@@ -201,7 +212,7 @@ function App() {
   }, [snapshot.participants])
 
   useEffect(() => {
-    if (!snapshot.round?.placardWindowEndsAt) {
+    if (!snapshot.round?.placardWindowEndsAt && speechPhase !== 'timing') {
       return
     }
 
@@ -210,7 +221,7 @@ function App() {
     }, 250)
 
     return () => window.clearInterval(timer)
-  }, [snapshot.round?.placardWindowEndsAt])
+  }, [snapshot.round?.placardWindowEndsAt, speechPhase])
 
   useEffect(() => {
     if (!currentRoundId || !activeVote || activeVote.status !== 'open') {
@@ -924,6 +935,9 @@ function App() {
                           ? 'Start the speech timer when the student begins speaking.'
                           : `Started at ${formatTime(snapshot.round.activeSpeechStartedAt ?? null)}`}
                       </span>
+                      {speechPhase === 'timing' ? (
+                        <div className="stopwatch-display">{formatDuration(speechElapsedMs)}</div>
+                      ) : null}
                     </div>
 
                     <div className="command-row">

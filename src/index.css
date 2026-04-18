@@ -462,6 +462,20 @@ p {
   line-height: 1;
 }
 
+.stopwatch-display {
+  display: inline-flex;
+  justify-self: start;
+  align-items: center;
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.14);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  color: var(--accent);
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .command-row {
   flex-wrap: wrap;
   margin-bottom: 1rem;
